@@ -1,10 +1,10 @@
-#include <torch/torch.h>
+ï»¿#include <torch/torch.h>
 #include <cmath>
 #include <iostream>
 #include <vector>
 #include <algorithm>
 
-// ×Ô¶¨Òå clamp º¯Êı
+// è‡ªå®šä¹‰ clamp å‡½æ•°
 template <typename T>
 T clamp(const T& value, const T& min_val, const T& max_val) {
     if (value < min_val) return min_val;
@@ -12,64 +12,84 @@ T clamp(const T& value, const T& min_val, const T& max_val) {
     return value;
 }
 
-// Éñ¾­ÍøÂç¿ØÖÆÆ÷ - Ê¹ÓÃÕıÈ·µÄĞòÁĞ»¯·½·¨
+// ç¥ç»ç½‘ç»œæ§åˆ¶å™¨ - æ”¯æŒè‡ªå®šä¹‰éšè—å±‚ç»“æ„
 struct AircraftControllerImpl : torch::nn::Module {
-    AircraftControllerImpl(int state_dim = 12, int action_dim = 4, int hidden_size = 256)
-        : fc1(register_module("fc1", torch::nn::Linear(state_dim, hidden_size))),
-        fc2(register_module("fc2", torch::nn::Linear(hidden_size, hidden_size))),
-        fc3(register_module("fc3", torch::nn::Linear(hidden_size, hidden_size))),
-        fc4(register_module("fc4", torch::nn::Linear(hidden_size, action_dim))) {
+    AircraftControllerImpl(int state_dim, int action_dim,const std::vector<int>& hidden_num)
+    {
+
+        // è¾“å…¥å±‚
+        auto input_layer = torch::nn::Linear(state_dim, hidden_num[0]);
+        layers->push_back(input_layer);
+        register_module("layer0", input_layer);
+
+        // éšè—å±‚
+        for (size_t i = 1; i < hidden_num.size(); i++) {
+            auto hidden_layer = torch::nn::Linear(hidden_num[i - 1], hidden_num[i]);
+            layers->push_back(hidden_layer);
+            register_module("layer" + std::to_string(i), hidden_layer);
+        }
+
+        // è¾“å‡ºå±‚
+        output_layer = register_module("output", torch::nn::Linear(hidden_num.back(), action_dim));
     }
 
     torch::Tensor forward(torch::Tensor x) {
-        x = torch::relu(fc1->forward(x));
-        x = torch::relu(fc2->forward(x));
-        x = torch::relu(fc3->forward(x));
-        x = torch::tanh(fc4->forward(x));
+        // é€šè¿‡æ‰€æœ‰éšè—å±‚ï¼ˆä½¿ç”¨ReLUæ¿€æ´»ï¼‰
+        for (size_t i = 0; i < layers->size(); i++) {
+            x = torch::relu(layers[i]->as<torch::nn::Linear>()->forward(x));
+        }
+
+        // è¾“å‡ºå±‚ï¼ˆä½¿ç”¨Tanhæ¿€æ´»ï¼‰
+        x = torch::tanh(output_layer->forward(x));
         return x;
     }
 
-    // ĞòÁĞ»¯Ö§³Ö
+    // åºåˆ—åŒ–æ”¯æŒ
     void save(torch::serialize::OutputArchive& archive) const {
-        archive.write("fc1.weight", fc1->weight);
-        archive.write("fc1.bias", fc1->bias);
-        archive.write("fc2.weight", fc2->weight);
-        archive.write("fc2.bias", fc2->bias);
-        archive.write("fc3.weight", fc3->weight);
-        archive.write("fc3.bias", fc3->bias);
-        archive.write("fc4.weight", fc4->weight);
-        archive.write("fc4.bias", fc4->bias);
+        // ä¿å­˜éšè—å±‚
+        for (size_t i = 0; i < layers->size(); i++) {
+            auto layer = layers->ptr(i)->as<torch::nn::Linear>();
+            archive.write("layer" + std::to_string(i) + ".weight", layer->weight);
+            archive.write("layer" + std::to_string(i) + ".bias", layer->bias);
+        }
+
+        // ä¿å­˜è¾“å‡ºå±‚
+        archive.write("output.weight", output_layer->weight);
+        archive.write("output.bias", output_layer->bias);
     }
 
     void load(torch::serialize::InputArchive& archive) {
-        archive.read("fc1.weight", fc1->weight);
-        archive.read("fc1.bias", fc1->bias);
-        archive.read("fc2.weight", fc2->weight);
-        archive.read("fc2.bias", fc2->bias);
-        archive.read("fc3.weight", fc3->weight);
-        archive.read("fc3.bias", fc3->bias);
-        archive.read("fc4.weight", fc4->weight);
-        archive.read("fc4.bias", fc4->bias);
+        // åŠ è½½éšè—å±‚
+        for (size_t i = 0; i < layers->size(); i++) {
+            auto layer = layers[i]->as<torch::nn::Linear>();
+            archive.read("layer" + std::to_string(i) + ".weight", layer->weight);
+            archive.read("layer" + std::to_string(i) + ".bias", layer->bias);
+        }
+
+        // åŠ è½½è¾“å‡ºå±‚
+        archive.read("output.weight", output_layer->weight);
+        archive.read("output.bias", output_layer->bias);
     }
 
-    torch::nn::Linear fc1, fc2, fc3, fc4;
+    torch::nn::ModuleList layers;  // æ‰€æœ‰éšè—å±‚
+    torch::nn::Linear output_layer{ nullptr };  // è¾“å‡ºå±‚
 };
 
-TORCH_MODULE(AircraftController);  // ¹Ø¼ü£º´´½¨Ä£¿é³ÖÓĞÕß
+TORCH_MODULE(AircraftController);
 
-// ·É»ú×´Ì¬½á¹¹Ìå
+// é£æœºçŠ¶æ€ç»“æ„ä½“
 struct AircraftState {
-    double longitude;  // ¾­¶È (¶È)
-    double latitude;   // Î³¶È (¶È)
-    double altitude;   // ¸ß¶È (Ã×)
-    double pitch;      // ¸©Ñö½Ç (»¡¶È)
-    double roll;       // ¹ö×ª½Ç (»¡¶È)
-    double yaw;        // Æ«º½½Ç (»¡¶È)
-    double u;          // Ç°ÏòËÙ¶È (m/s)
-    double v;          // ºáÏòËÙ¶È (m/s)
-    double w;          // ´¹Ö±ËÙ¶È (m/s)
+    double longitude;  // ç»åº¦ (åº¦)
+    double latitude;   // çº¬åº¦ (åº¦)
+    double altitude;   // é«˜åº¦ (ç±³)
+    double pitch;      // ä¿¯ä»°è§’ (å¼§åº¦)
+    double roll;       // æ»šè½¬è§’ (å¼§åº¦)
+    double yaw;        // åèˆªè§’ (å¼§åº¦)
+    double u;          // å‰å‘é€Ÿåº¦ (m/s)
+    double v;          // æ¨ªå‘é€Ÿåº¦ (m/s)
+    double w;          // å‚ç›´é€Ÿåº¦ (m/s)
 
-    // ×ª»»ÎªÕÅÁ¿
+    // è½¬æ¢ä¸ºå¼ é‡
     torch::Tensor toTensor() const {
         torch::Tensor tensor = torch::zeros({ 9 }, torch::kFloat32);
         tensor[0] = longitude;
@@ -86,12 +106,12 @@ struct AircraftState {
 
     void print(const std::string& label = "State") const {
         std::cout << label << ": ";
-        std::cout << "Lon: " << longitude << "¡ã, ";
-        std::cout << "Lat: " << latitude << "¡ã, ";
+        std::cout << "Lon: " << longitude << "Â°, ";
+        std::cout << "Lat: " << latitude << "Â°, ";
         std::cout << "Alt: " << altitude << "m, ";
-        std::cout << "Pitch: " << degrees(pitch) << "¡ã, ";
-        std::cout << "Roll: " << degrees(roll) << "¡ã, ";
-        std::cout << "Yaw: " << degrees(yaw) << "¡ã, ";
+        std::cout << "Pitch: " << degrees(pitch) << "Â°, ";
+        std::cout << "Roll: " << degrees(roll) << "Â°, ";
+        std::cout << "Yaw: " << degrees(yaw) << "Â°, ";
         std::cout << "U: " << u << "m/s, ";
         std::cout << "V: " << v << "m/s, ";
         std::cout << "W: " << w << "m/s\n";
@@ -101,13 +121,13 @@ private:
     double degrees(double rad) const { return rad * 180.0 / M_PI; }
 };
 
-// Ä¿±ê×´Ì¬½á¹¹Ìå
+// ç›®æ ‡çŠ¶æ€ç»“æ„ä½“
 struct TargetState {
-    double longitude;  // Ä¿±ê¾­¶È (¶È)
-    double latitude;   // Ä¿±êÎ³¶È (¶È)
-    double altitude;   // Ä¿±ê¸ß¶È (Ã×)
+    double longitude;  // ç›®æ ‡ç»åº¦ (åº¦)
+    double latitude;   // ç›®æ ‡çº¬åº¦ (åº¦)
+    double altitude;   // ç›®æ ‡é«˜åº¦ (ç±³)
 
-    // ×ª»»ÎªÕÅÁ¿
+    // è½¬æ¢ä¸ºå¼ é‡
     torch::Tensor toTensor() const {
         torch::Tensor tensor = torch::zeros({ 3 }, torch::kFloat32);
         tensor[0] = longitude;
@@ -118,18 +138,18 @@ struct TargetState {
 
     void print() const {
         std::cout << "Target: ";
-        std::cout << "Lon: " << longitude << "¡ã, ";
-        std::cout << "Lat: " << latitude << "¡ã, ";
+        std::cout << "Lon: " << longitude << "Â°, ";
+        std::cout << "Lat: " << latitude << "Â°, ";
         std::cout << "Alt: " << altitude << "m\n";
     }
 };
 
-// ¿ØÖÆÊä³ö½á¹¹Ìå
+// æ§åˆ¶è¾“å‡ºç»“æ„ä½“
 struct ControlOutput {
-    double throttle;   // ÓÍÃÅ [0, 1]
-    double aileron;    // ¸±Òí [-1, 1]
-    double elevator;   // Éı½µ¶æ [-1, 1]
-    double rudder;     // ·½Ïò¶æ [-1, 1]
+    double throttle;   // æ²¹é—¨ [0, 1]
+    double aileron;    // å‰¯ç¿¼ [-1, 1]
+    double elevator;   // å‡é™èˆµ [-1, 1]
+    double rudder;     // æ–¹å‘èˆµ [-1, 1]
 
     static ControlOutput fromTensor(const torch::Tensor& tensor) {
         ControlOutput ctrl;
@@ -150,27 +170,27 @@ struct ControlOutput {
     }
 };
 
-// ·É»ú¶¯Á¦Ñ§Ä£ĞÍ
+// é£æœºåŠ¨åŠ›å­¦æ¨¡å‹
 class AircraftDynamics {
 public:
     AircraftDynamics() : earth_radius(6371000.0), deg2rad(M_PI / 180.0) {}
 
     void update(AircraftState& state, const ControlOutput& ctrl, double dt = 0.1) {
-        // ×ËÌ¬±ä»¯ÂÊ
+        // å§¿æ€å˜åŒ–ç‡
         double pitch_rate = 0.5 * ctrl.elevator - 0.1 * state.pitch;
         double roll_rate = 1.0 * ctrl.aileron - 0.2 * state.roll;
         double yaw_rate = 0.3 * ctrl.rudder - 0.1 * state.yaw;
 
-        // ¸üĞÂ×ËÌ¬
+        // æ›´æ–°å§¿æ€
         state.pitch += pitch_rate * dt;
         state.roll += roll_rate * dt;
         state.yaw += yaw_rate * dt;
 
-        // ÏŞÖÆ×ËÌ¬½Ç¶È
+        // é™åˆ¶å§¿æ€è§’åº¦
         state.pitch = clamp(state.pitch, -M_PI / 3.0, M_PI / 3.0);
         state.roll = clamp(state.roll, -M_PI / 2.0, M_PI / 2.0);
 
-        // ËÙ¶È±ä»¯
+        // é€Ÿåº¦å˜åŒ–
         double thrust = 20.0 * ctrl.throttle;
         double drag = 0.1 * state.u * std::abs(state.u);
         double lift = 0.2 * std::abs(state.u) * state.pitch;
@@ -183,7 +203,7 @@ public:
         state.v += dv;
         state.w += dw;
 
-        // ×ø±êÏµ×ª»»
+        // åæ ‡ç³»è½¬æ¢
         double cosP = std::cos(state.pitch), sinP = std::sin(state.pitch);
         double cosR = std::cos(state.roll), sinR = std::sin(state.roll);
         double cosY = std::cos(state.yaw), sinY = std::sin(state.yaw);
@@ -200,7 +220,7 @@ public:
             state.v * cosP * sinR +
             state.w * cosP * cosR;
 
-        // ¸üĞÂÎ»ÖÃ
+        // æ›´æ–°ä½ç½®
         double lat_rad = state.latitude * deg2rad;
         double dlat = (ve / (earth_radius + state.altitude)) * (180.0 / M_PI) * dt;
         double dlon = (vn / ((earth_radius + state.altitude) * std::max(0.0001, std::cos(lat_rad)))) * (180.0 / M_PI) * dt;
@@ -216,12 +236,12 @@ private:
     double deg2rad;
 };
 
-// ¼ÆËã×´Ì¬ÏòÁ¿
+// è®¡ç®—çŠ¶æ€å‘é‡
 torch::Tensor compute_state_vector(const AircraftState& current, const TargetState& target) {
     return torch::cat({ current.toTensor(), target.toTensor() });
 }
 
-// Ö÷¿ØÖÆÑ­»·
+// ä¸»æ§åˆ¶å¾ªç¯
 void control_loop(AircraftController& controller, AircraftDynamics& dynamics) {
     AircraftState current_state{ 0.0, 0.0, 1000.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0 };
     TargetState target_state{ 0.1, 0.1, 1000.0 };
@@ -231,25 +251,25 @@ void control_loop(AircraftController& controller, AircraftDynamics& dynamics) {
 
     const int max_steps = 500;
     for (int step = 0; step < max_steps; ++step) {
-        // ¼ÆËã×´Ì¬ÏòÁ¿
+        // è®¡ç®—çŠ¶æ€å‘é‡
         auto state_vector = compute_state_vector(current_state, target_state);
 
-        // Éñ¾­ÍøÂç¼ÆËã¿ØÖÆÊä³ö
+        // ç¥ç»ç½‘ç»œè®¡ç®—æ§åˆ¶è¾“å‡º
         auto action = controller->forward(state_vector);
 
-        // ×ª»»Îª¿ØÖÆÖ¸Áî
+        // è½¬æ¢ä¸ºæ§åˆ¶æŒ‡ä»¤
         ControlOutput ctrl = ControlOutput::fromTensor(action);
 
-        // Ó¦ÓÃ¿ØÖÆÖ¸Áî
+        // åº”ç”¨æ§åˆ¶æŒ‡ä»¤
         dynamics.update(current_state, ctrl);
 
-        // Ã¿50²½´òÓ¡Ò»´Î×´Ì¬
+        // æ¯50æ­¥æ‰“å°ä¸€æ¬¡çŠ¶æ€
         if (step % 50 == 0) {
             std::cout << "\nStep: " << step << std::endl;
             current_state.print("Current State");
             ctrl.print();
 
-            // ¼ÆËãµ½Ä¿±êµÄ¾àÀë
+            // è®¡ç®—åˆ°ç›®æ ‡çš„è·ç¦»
             double dlon = (target_state.longitude - current_state.longitude) * 111319.0;
             double dlat = (target_state.latitude - current_state.latitude) * 111319.0;
             double dalt = target_state.altitude - current_state.altitude;
@@ -257,7 +277,7 @@ void control_loop(AircraftController& controller, AircraftDynamics& dynamics) {
             std::cout << "Distance to target: " << distance << " meters\n";
         }
 
-        // ¼ì²éÊÇ·ñµ½´ïÄ¿±ê
+        // æ£€æŸ¥æ˜¯å¦åˆ°è¾¾ç›®æ ‡
         if (std::abs(target_state.longitude - current_state.longitude) < 0.0001 &&
             std::abs(target_state.latitude - current_state.latitude) < 0.0001 &&
             std::abs(target_state.altitude - current_state.altitude) < 10.0) {
@@ -269,11 +289,14 @@ void control_loop(AircraftController& controller, AircraftDynamics& dynamics) {
 }
 
 int main() {
-    // ´´½¨¿ØÖÆÆ÷ºÍ¶¯Á¦Ñ§Ä£ĞÍ
-    AircraftController controller;  // Ê¹ÓÃÄ£¿é³ÖÓĞÕß
+    // å®šä¹‰éšè—å±‚é…ç½®
+    std::vector<int> hidden_num = { 16, 32, 64, 128, 64, 16 };
+
+    // åˆ›å»ºæ§åˆ¶å™¨ï¼ˆä½¿ç”¨è‡ªå®šä¹‰éšè—å±‚ç»“æ„ï¼‰
+    AircraftController controller(12, 4, hidden_num);
     AircraftDynamics dynamics;
 
-    // ³¢ÊÔ¼ÓÔØÔ¤ÑµÁ·Ä£ĞÍ
+    // å°è¯•åŠ è½½é¢„è®­ç»ƒæ¨¡å‹
     try {
         torch::load(controller, "aircraft_controller.pt");
         std::cout << "Loaded pretrained model.\n";
@@ -283,8 +306,17 @@ int main() {
         std::cout << "Using untrained controller.\n";
     }
 
-    // ÔËĞĞ¿ØÖÆÑ­»·
+    // æ‰“å°ç½‘ç»œç»“æ„ä¿¡æ¯
+    std::cout << "Neural Network Architecture:\n";
+    std::cout << "Input layer: 12 neurons\n";
+    for (size_t i = 0; i < hidden_num.size(); i++) {
+        std::cout << "Hidden layer " << (i + 1) << ": " << hidden_num[i] << " neurons\n";
+    }
+    std::cout << "Output layer: 4 neurons\n";
+
+    // è¿è¡Œæ§åˆ¶å¾ªç¯
     control_loop(controller, dynamics);
+    torch::save(controller, "aircraft_controller.pt");
 
     return 0;
 }
